@@ -65,7 +65,24 @@ def generate_notebook(
         install_line = "!pip install -q " + " ".join(sorted(imports))
         nb.cells.append(nbformat.v4.new_code_cell(install_line))
 
-    # ── Cells 5+: Code split on section comments ────────────────────────
+    # ── Cell 5: Colab runtime / GPU check ────────────────────────────────
+    gpu_check = (
+        "# ── Runtime check ──────────────────────────────────────────\n"
+        "import torch\n"
+        "device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')\n"
+        "print(f'Using device: {device}')\n"
+        "if device.type == 'cuda':\n"
+        "    print(f'GPU: {torch.cuda.get_device_name(0)}')\n"
+        "    print(f'Memory: {torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB')\n"
+        "else:\n"
+        "    print('⚠️ No GPU detected. Go to Runtime > Change runtime type > GPU.')"
+    )
+    nb.cells.append(nbformat.v4.new_code_cell(gpu_check))
+
+    # ── Cell 6: Matplotlib inline magic ──────────────────────────────────
+    nb.cells.append(nbformat.v4.new_code_cell("%matplotlib inline"))
+
+    # ── Cells 7+: Code split on section comments ────────────────────────
     sections = _split_code_sections(code)
     for section in sections:
         nb.cells.append(nbformat.v4.new_code_cell(section))

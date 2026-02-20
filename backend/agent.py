@@ -41,6 +41,25 @@ async def run_pipeline(
             on_progress(evt)
 
     try:
+        # ── Step 0: Check for duplicate repos ────────────────────────────
+        emit(RunStatus.PENDING, "🔍 Checking for existing implementations…")
+        try:
+            from github_client import check_existing_repos
+            matches = check_existing_repos(run.paper_input)
+            if matches:
+                repo_links = ", ".join(
+                    f"{m['name']} ({m['url']})" for m in matches
+                )
+                emit(
+                    RunStatus.PENDING,
+                    f"⚠️ Found {len(matches)} existing repo(s) that may "
+                    f"implement this paper: {repo_links}. Proceeding anyway.",
+                )
+            else:
+                emit(RunStatus.PENDING, "✅ No duplicate repos found.")
+        except Exception:
+            emit(RunStatus.PENDING, "ℹ️ Could not check for duplicates. Proceeding.")
+
         # ── Step 1: Parse paper ──────────────────────────────────────────
         emit(RunStatus.PARSING_PAPER, "📄 Parsing paper and extracting key information…")
         run.paper_info = await parse_paper(run.paper_input)

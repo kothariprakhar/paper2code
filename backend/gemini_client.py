@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import re
 import textwrap
 
 import google.generativeai as genai
+
+logger = logging.getLogger(__name__)
 
 _configured = False
 
@@ -24,6 +28,40 @@ def _ensure_configured():
 def _model():
     _ensure_configured()
     return genai.GenerativeModel("gemini-2.0-flash")
+
+
+_MAX_RETRIES = 5
+_BASE_DELAY = 15  # seconds
+
+
+async def _call_with_retry(prompt: str) -> str:
+    """Call the Gemini API with automatic retry + exponential backoff on 429."""
+    model = _model()
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            resp = await model.generate_content_async(prompt)
+            return resp.text.strip()
+        except Exception as exc:
+            err_str = str(exc)
+            is_rate_limit = "429" in err_str or "Resource" in err_str
+            if not is_rate_limit or attempt == _MAX_RETRIES:
+                raise
+
+            # Try to parse server-suggested delay
+            delay = _BASE_DELAY * (2 ** (attempt - 1))
+            import re as _re
+            m = _re.search(r'retry.*?(\d+(?:\.\d+)?)\s*s', err_str, _re.IGNORECASE)
+            if m:
+                delay = max(delay, float(m.group(1)))
+
+            logger.warning(
+                "Gemini rate-limited (attempt %d/%d). Retrying in %.0fs…",
+                attempt, _MAX_RETRIES, delay,
+            )
+            await asyncio.sleep(delay)
+
+    # Should never reach here, but just in case
+    raise RuntimeError("Gemini API retries exhausted.")
 
 
 def _strip_fences(text: str, lang: str = "") -> str:
@@ -66,8 +104,7 @@ async def parse_paper(paper_input: str) -> str:
         Paper input:
         {paper_input}
     """)
-    resp = await _model().generate_content_async(prompt)
-    return resp.text.strip()
+    return await _call_with_retry(prompt)
 
 
 async def generate_architecture(paper_info: str, framework: str = "pytorch") -> str:
@@ -104,8 +141,7 @@ async def generate_architecture(paper_info: str, framework: str = "pytorch") -> 
         Be specific about tensor shapes and layer configurations.
         Use realistic hyperparameter defaults.
     """)
-    resp = await _model().generate_content_async(prompt)
-    return resp.text.strip()
+    return await _call_with_retry(prompt)
 
 
 async def generate_code(
@@ -144,8 +180,8 @@ async def generate_code(
 
         Return ONLY the Python code, no explanations or markdown.
     """)
-    resp = await _model().generate_content_async(prompt)
-    return _strip_fences(resp.text, "python")
+    result = await _call_with_retry(prompt)
+    return _strip_fences(result, "python")
 
 
 async def refine_code(
@@ -176,8 +212,8 @@ async def refine_code(
         **Architecture document:**
         {architecture_doc}
     """)
-    resp = await _model().generate_content_async(prompt)
-    return _strip_fences(resp.text, "python")
+    result = await _call_with_retry(prompt)
+    return _strip_fences(result, "python")
 
 
 async def generate_readme(
@@ -213,5 +249,4 @@ async def generate_readme(
 
         Return only the README markdown, nothing else.
     """)
-    resp = await _model().generate_content_async(prompt)
-    return resp.text.strip()
+    return await _call_with_retry(prompt)
