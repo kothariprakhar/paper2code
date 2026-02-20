@@ -25,43 +25,59 @@ def _ensure_configured():
         _configured = True
 
 
-def _model():
+def _model(model_name: str = "gemini-2.5-flash"):
     _ensure_configured()
-    return genai.GenerativeModel("gemini-2.0-flash")
+    return genai.GenerativeModel(model_name)
 
 
+_PRIMARY_MODEL = "gemini-2.5-flash"
+_FALLBACK_MODEL = "gemini-2.5-pro"
 _MAX_RETRIES = 5
 _BASE_DELAY = 15  # seconds
 
 
 async def _call_with_retry(prompt: str) -> str:
-    """Call the Gemini API with automatic retry + exponential backoff on 429."""
-    model = _model()
-    for attempt in range(1, _MAX_RETRIES + 1):
-        try:
-            resp = await model.generate_content_async(prompt)
-            return resp.text.strip()
-        except Exception as exc:
-            err_str = str(exc)
-            is_rate_limit = "429" in err_str or "Resource" in err_str
-            if not is_rate_limit or attempt == _MAX_RETRIES:
-                raise
+    """Call the Gemini API with automatic retry + exponential backoff on 429.
 
-            # Try to parse server-suggested delay
-            delay = _BASE_DELAY * (2 ** (attempt - 1))
-            import re as _re
-            m = _re.search(r'retry.*?(\d+(?:\.\d+)?)\s*s', err_str, _re.IGNORECASE)
-            if m:
-                delay = max(delay, float(m.group(1)))
+    Uses gemini-2.5-flash by default. If it fails with a non-rate-limit error,
+    falls back to gemini-2.5-pro.
+    """
+    for model_name in (_PRIMARY_MODEL, _FALLBACK_MODEL):
+        model = _model(model_name)
+        for attempt in range(1, _MAX_RETRIES + 1):
+            try:
+                resp = await model.generate_content_async(prompt)
+                return resp.text.strip()
+            except Exception as exc:
+                err_str = str(exc)
+                is_rate_limit = "429" in err_str or "Resource" in err_str
 
-            logger.warning(
-                "Gemini rate-limited (attempt %d/%d). Retrying in %.0fs…",
-                attempt, _MAX_RETRIES, delay,
-            )
-            await asyncio.sleep(delay)
+                if is_rate_limit and attempt < _MAX_RETRIES:
+                    # Retry with backoff on rate limits
+                    delay = _BASE_DELAY * (2 ** (attempt - 1))
+                    import re as _re
+                    m = _re.search(r'retry.*?(\d+(?:\.\d+)?)\s*s', err_str, _re.IGNORECASE)
+                    if m:
+                        delay = max(delay, float(m.group(1)))
 
-    # Should never reach here, but just in case
-    raise RuntimeError("Gemini API retries exhausted.")
+                    logger.warning(
+                        "Gemini rate-limited on %s (attempt %d/%d). Retrying in %.0fs…",
+                        model_name, attempt, _MAX_RETRIES, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                # Non-rate-limit error or retries exhausted → try fallback model
+                if model_name == _PRIMARY_MODEL:
+                    logger.warning(
+                        "Model %s failed: %s. Falling back to %s.",
+                        model_name, err_str[:200], _FALLBACK_MODEL,
+                    )
+                    break  # break inner loop to try fallback model
+                else:
+                    raise  # fallback also failed, propagate
+
+    raise RuntimeError("All Gemini models and retries exhausted.")
 
 
 def _strip_fences(text: str, lang: str = "") -> str:
